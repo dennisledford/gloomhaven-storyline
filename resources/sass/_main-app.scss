@@ -1,0 +1,76 @@
+html {
+    background-color: #393939;
+}
+
+html, body {
+    @apply font-default;
+    color: #fff;
+    font-weight: 200;
+    font-size: 18px;
+    height: 100vh;
+    margin: 0;
+}
+
+h1, h2, h3 {
+    @apply font-title #{!important};
+}
+
+#bg {
+    background-color: #000;
+    background-image: url('../img/background-lowres.jpg');
+    background-size: cover, cover;
+    background-position: center, center;
+    background-repeat: no-repeat, no-repeat;
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: -1;
+    -webkit-transform: translateZ(0);
+    pointer-events: none;
+}
+
+.logo {
+    @apply fixed mt-4 z-5;
+    left: 50%;
+    width: 250px;
+    margin-left: -125px;
+}
+
+.link {
+    @apply underline text-white2-75 cursor-pointer duration-200 transition-colors;
+    &:hover {
+        @apply text-white;
+    }
+}
+
+button:focus, .scenario {
+    outline: none;
+}
+
+:not(.mdc-list--non-interactive) > :not(.mdc-list-item--disabled).mdc-list-item::before, :not(.mdc-list--non-interactive) > :not(.mdc-list-item--disabled).mdc-list-item::after {
+    background-color: #000;
+    z-index: -1;
+}
+
+[v-cloak] {
+    display: none;
+}
+
+.cloud-on:after {
+    @extend .material-icons;
+    content: 'cloud_queue';
+}
+
+.cloud-off:after {
+    @extend .material-icons;
+    content: 'cloud_off';
+}
+
+.no-select {
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    -ms-user-select: none;
+    user-select: none;
+}

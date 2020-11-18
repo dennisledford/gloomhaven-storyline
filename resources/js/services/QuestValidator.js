@@ -4,7 +4,7 @@ import {ScenarioState} from "../models/ScenarioState";
 export default class QuestValidator {
     validate() {
         app.quests.each((quest) => {
-            quest.stage = 0;
+            quest.stage = undefined;
             quest.checks.forEach((check, index) => {
                 if (this.check(check)) {
                     quest.stage = index;
@@ -40,6 +40,6 @@ export default class QuestValidator {
     }
 
     get scenarioRepository() {
-        return this.scenarioRepository2 || (this.scenarioRepository2 = new ScenarioRepository);
+        return this._scenarioRepository || (this._scenarioRepository = new ScenarioRepository);
     }
 }

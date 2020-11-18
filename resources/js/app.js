@@ -8,44 +8,47 @@ import AchievementRepository from "./repositories/AchievementRepository";
 import VueRouter from 'vue-router';
 import VueI18n from 'vue-i18n';
 import VueAnalytics from 'vue-analytics';
-import Achievement from "./models/Achievement";
-import {loadLanguageAsync} from "./services/I18n-setup";
 import i18nEn from "./lang/en";
+import Helpers from './services/Helpers';
+import store from "store/dist/store.modern";
+import UserRepository from "./apiRepositories/UserRepository";
+import StoryRepository from "./apiRepositories/StoryRepository";
+import {loadStripe} from '@stripe/stripe-js/pure';
+import EchoService from "./services/EchoService";
+import VueScrollTo from "vue-scrollto";
+import StorySyncer from "./services/StorySyncer";
+import OfflineChecker from "./services/OfflineChecker";
 
 window._ = require('lodash');
 window.$ = require('jquery');
 window.Vue = require('vue');
 window.collect = require('collect.js');
+window.axios = require('axios').default.create({
+    baseURL: process.env.MIX_API_URL,
+    withCredentials: true
+});
+
 Vue.use(SocialSharing);
 VueClipboard.config.autoSetContainer = true;
 Vue.use(VueClipboard);
+Vue.use(VueScrollTo);
 
 // Vue components
 const components = require.context('./components', true, /\.vue$/i);
 components.keys().map(key => Vue.component(key.split('/').pop().split('.')[0], components(key).default));
 
-// pages
-const Story = () => import("./pages/Story");
-const Scenarios = () => import("./pages/Scenarios");
-const Achievements = () => import("./pages/Achievements");
-const Map = () => import("./pages/Map");
-
 // Router
-const routes = [
-    {path: '/', redirect: '/story'},
-    {path: '/story', component: Story},
-    {path: '/scenarios', component: Scenarios},
-    {path: '/map', component: Map},
-    {path: '/achievements', component: Achievements},
-];
+const routes = require('./routes').default;
 const router = new VueRouter({routes});
 Vue.use(VueRouter);
 
 // Analytics
-Vue.use(VueAnalytics, {
-    id: 'UA-162268349-1',
-    router
-});
+if (Helpers.inProduction() && process.env.MIX_GA_ID) {
+    Vue.use(VueAnalytics, {
+        id: process.env.MIX_GA_ID,
+        router
+    });
+}
 
 // Multi Language
 Vue.use(VueI18n);
@@ -72,48 +75,120 @@ window.app = new Vue({
             achievements: null,
             webpSupported: true,
             hasMouse: false,
-            isPortrait: true
+            isPortrait: true,
+            user: null,
+            stories: collect(),
+            campaignId: 'local',
+            campaignData: {},
+
+            scenarioRepository: new ScenarioRepository,
+            questRepository: new QuestRepository,
+            achievementRepository: new AchievementRepository,
+            userRepository: new UserRepository,
+            storyRepository: new StoryRepository,
+            echo: new EchoService,
+            scenarioValidator: new ScenarioValidator,
+            storySyncer: new StorySyncer,
+            offlineChecker: new OfflineChecker(this.$bus)
         }
     },
     async mounted() {
-        // loadLanguageAsync('de');
         this.checkOrientation();
+        this.offlineChecker.handle();
         this.webpSupported = this.isWebpSupported();
         this.hasMouse = this.checkHasMouse();
+        this.shouldTransferVersion1Progress();
 
-        await Promise.all([
-            this.fetchAchievements(),
-            this.fetchScenarios()
-        ]);
+        await this.loadCampaignData(true);
+        await this.$nextTick();
+        await this.campaignsChanged();
 
-        this.shouldRedirectToDotCom();
+        (new ShareState).loadOldLink();
 
-        document.getElementsByTagName('body')[0].style['background-image'] = "url('/img/background-highres.jpg'), url('/img/background-lowres.jpg')";
+        document.getElementById('bg').style['background-image'] = "url('/img/background-highres.jpg'), url('/img/background-lowres.jpg')";
+
+        this.$bus.$on('campaign-selected', this.switchCampaign);
+        this.$bus.$on('load-campaign-data', this.loadCampaignData);
+
+        Vue.prototype.$stripe = await loadStripe(process.env.MIX_STRIPE_KEY);
 
         this.$bus.$emit('open-donations');
+
+        this.listenToCrtlS();
     },
     methods: {
+        async campaignsChanged(shouldSync = true) {
+            await Promise.all([
+                this.fetchAchievements(),
+                this.fetchScenarios(shouldSync)
+            ]);
+
+            this.$bus.$emit('campaigns-changed');
+        },
         async fetchAchievements() {
-            let achievementRepository = new AchievementRepository;
-            this.achievements = achievementRepository.fetch();
+            this.achievements = this.achievementRepository.fetch();
             await this.$nextTick();
             this.$bus.$emit('achievements-updated');
 
             return true;
         },
-        async fetchScenarios() {
-            let scenarioRepository = new ScenarioRepository;
-            let questRepository = new QuestRepository;
-            this.quests = questRepository.fetch();
-            this.scenarios = scenarioRepository.fetch();
-            scenarioRepository.setQuests(this.scenarios, this.quests);
+        async fetchScenarios(shouldSync = true) {
+            this.quests = this.questRepository.fetch();
+            this.scenarios = this.scenarioRepository.fetch();
+            this.scenarioRepository.setQuests(this.scenarios, this.quests);
 
             await this.$nextTick();
-            (new ShareState).load();
-            (new ScenarioValidator).validate();
+            this.scenarioValidator.validate(shouldSync);
             this.$bus.$emit('scenarios-updated');
 
             return true;
+        },
+        switchLocal(campaignId = 'local') {
+            this.campaignId = campaignId;
+            store.set('campaignId', this.campaignId);
+        },
+        async switchCampaign(campaignId, shouldFetch = false) {
+            this.campaignId = campaignId;
+            store.set('campaignId', this.campaignId);
+            await this.loadCampaignData(shouldFetch);
+            await this.campaignsChanged();
+        },
+        async loadCampaignData(shouldFetch = false) {
+            this.campaignId = store.get('campaignId') || 'local';
+
+            if (shouldFetch) {
+                await this.fetchCampaignData();
+            }
+
+            this.campaignData = store.get(this.campaignId) || {};
+            this.stories = this.storyRepository.getStories();
+            if (Helpers.loggedIn()) {
+                this.user = this.userRepository.getUser();
+            }
+
+            this.stories.each(story => {
+                this.echo.listen(story, async newStory => {
+                    this.storyRepository.replaceStory(newStory);
+                    await this.loadCampaignData();
+                    await this.campaignsChanged(false);
+                });
+            });
+        },
+        async fetchCampaignData() {
+            try {
+                let promises = [
+                    this.storyRepository.sharedStories()
+                ];
+
+                if (Helpers.loggedIn()) {
+                    promises.push(this.userRepository.find());
+                    promises.push(this.storyRepository.stories());
+                }
+
+                await Promise.all(promises);
+            } catch (e) {
+                // offline
+            }
         },
         isWebpSupported() {
             let elem = document.createElement('canvas');
@@ -149,11 +224,37 @@ window.app = new Vue({
             let vh = window.innerHeight * 0.01;
             document.documentElement.style.setProperty('--vh', `${vh}px`);
         },
-        shouldRedirectToDotCom() {
-            if (window.location.host.endsWith(".danield.nl")) {
-                const url = 'https://gloomhaven-storyline.com';
-                window.location = url + '?' + (new ShareState).encode();
+        shouldTransferVersion1Progress() {
+            if (!store.get('scenario-1')) {
+                return;
             }
+
+            const items = {...localStorage};
+
+            // fetch old campaign progress.
+            let local = {};
+            for (const [key, value] of Object.entries(items)) {
+                if (key.startsWith('scenario') || key.startsWith('achievement')) {
+                    local[key] = JSON.parse(value);
+                }
+            }
+
+            // store campaign progress at new location.
+            store.set('local', local);
+
+            // remove old campaign progress.
+            Object.keys(local).forEach(key => {
+                store.remove(key);
+            });
+        },
+
+        listenToCrtlS() {
+            document.addEventListener('keydown', (e) => {
+                if ((Helpers.isMac() ? e.metaKey : e.ctrlKey) && (e.code === 'KeyS')) {
+                    e.preventDefault();
+                    this.storySyncer.store(true);
+                }
+            }, false);
         }
     }
 });
